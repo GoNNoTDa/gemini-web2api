@@ -1,17 +1,38 @@
 {
   "port": 8081,
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "retry_attempts": 3,
   "retry_delay_sec": 2,
   "request_timeout_sec": 180,
   "gemini_bl": "boq_assistant-bard-web-server_20260525.09_p0",
-  "auth_user": null,
-  "xsrf_token": null,
   "default_model": "gemini-3.5-flash",
+  "log_requests": true,
+
+  "_comment_api_keys": "Required. Generate with: python -c \"import secrets; print(secrets.token_urlsafe(32))\"",
   "api_keys": [
-    "sk-gemini"
+    "REPLACE_ME_WITH_A_SECURE_TOKEN"
   ],
-  "cookie_file": null,
-  "proxy": null,
-  "log_requests": true
+
+  "_comment_accounts": "Multi-account list. Each entry is one Google account.",
+  "accounts": [
+    {
+      "name": "account1",
+      "cookie_file": "cookies/account1.json",
+      "auth_user": null,
+      "proxy": null,
+      "xsrf_token": null
+    },
+    {
+      "name": "account2",
+      "cookie_file": "cookies/account2.json",
+      "auth_user": 1,
+      "proxy": null,
+      "xsrf_token": null
+    }
+  ],
+
+  "_comment_single_account": "If you only have one account, remove 'accounts' and use these legacy fields instead:",
+  "_legacy_cookie_file": "cookies/my_account.json",
+  "_legacy_auth_user": null,
+  "_legacy_proxy": null
 }

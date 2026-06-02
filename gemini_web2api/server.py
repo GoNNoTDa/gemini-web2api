@@ -11,6 +11,7 @@ from .models import MODELS, resolve_model
 from .gemini import generate, generate_stream, log
 from .tools import messages_to_prompt, parse_tool_calls, google_contents_to_prompt, parse_google_function_calls
 from .multimodal import upload_image, fetch_image_bytes
+from .accounts import POOL
 from . import __version__
 
 
@@ -21,7 +22,6 @@ def _usage(prompt: str, text: str) -> dict:
 
 
 def _upload_images(images: list) -> list:
-    """Upload images and return list of file references. Returns None if no images."""
     if not images:
         return None
     file_refs = []
@@ -66,13 +66,25 @@ class GeminiHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             return None
 
-    def _authorized(self):
+    def _authorized(self) -> bool:
+        """Validate Bearer token. Rejects ALL requests if no api_keys are configured."""
         keys = CONFIG.get("api_keys") or []
         if not keys:
-            return True
+            # No keys configured → deny everything to avoid accidentally open servers
+            return False
         auth = self.headers.get("Authorization", "")
-        key = auth[7:] if auth.startswith("Bearer ") else self.headers.get("x-api-key", "")
-        return key in keys
+        token = auth[7:] if auth.startswith("Bearer ") else self.headers.get("x-api-key", "")
+        return token in keys
+
+    def _require_auth(self) -> bool:
+        """Send 401 and return True if the request is unauthorized."""
+        if not self._authorized():
+            self.send_json(
+                {"error": {"message": "Unauthorized. Provide a valid Bearer token.", "type": "auth_error"}},
+                401
+            )
+            return True
+        return False
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -83,8 +95,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            if self.path.startswith("/v1/") and not self._authorized():
-                self.send_json({"error": {"message": "invalid api key"}}, 401)
+            if self._require_auth():
                 return
             if self.path == "/v1/models":
                 self.send_json({"object": "list", "data": [
@@ -99,7 +110,14 @@ class GeminiHandler(BaseHTTPRequestHandler):
                     for n, c in MODELS.items()
                 ]})
             elif self.path == "/":
-                self.send_json({"status": "ok", "version": __version__, "models": list(MODELS.keys())})
+                # Health check — also requires auth
+                self.send_json({
+                    "status": "ok",
+                    "version": __version__,
+                    "models": list(MODELS.keys()),
+                    "accounts": POOL.count(),
+                    "account_names": POOL.names(),
+                })
             else:
                 self.send_json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -107,8 +125,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if self.path.startswith("/v1/") and not self._authorized():
-                self.send_json({"error": {"message": "invalid api key"}}, 401)
+            if self._require_auth():
                 return
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b""
@@ -201,7 +218,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                           "total_tokens": (len(prompt)+len(text or ""))//4},
             })
 
-    # ─── /v1/responses (Codex CLI) ───────────────────────────────────────────
+    # ─── /v1/responses ────────────────────────────────────────────────────────
 
     def _handle_responses(self, body: bytes):
         req = self._parse_body(body)
@@ -242,7 +259,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                         m = {"role": "assistant", "content": text_acc or None}
                         if tc_list:
                             m["tool_calls"] = [{"id": tc.get("call_id", f"call_{i}"), "type": "function",
-                                                "function": {"name": tc.get("name",""), "arguments": tc.get("arguments","{}")}}
+                                                "function": {"name": tc.get("name",""), "arguments": tc.get("arguments","{}") }}
                                                for i, tc in enumerate(tc_list)]
                         messages.append(m)
                     else:
@@ -367,9 +384,6 @@ class GeminiHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
             return
-
-        if not text:
-            log("Warning: empty response from Gemini")
 
         response_parts = []
         if has_tools and text:
